@@ -14,12 +14,35 @@ impl Db {
                 id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
                 severity TEXT NOT NULL DEFAULT 'unknown', published TEXT NOT NULL,
                 source TEXT NOT NULL, url TEXT, llm_summary TEXT, ascii_diagram TEXT,
-                relevance_score REAL)",
+                relevance_score REAL);
+             CREATE TABLE IF NOT EXISTS cve_hop_cache (
+                cve_id TEXT PRIMARY KEY, hop_url TEXT NOT NULL, hop_content TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS deleted_entries (id TEXT PRIMARY KEY)",
         )?;
         for col in ["scraped_content TEXT", "cve_ids TEXT DEFAULT '[]'", "content_type TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE entries ADD COLUMN {col}"), []);
         }
         Ok(Self { conn })
+    }
+
+    // CVE-id-keyed cache of the Phase 4/5 hop result: the single reference URL the picker
+    // chose for this CVE and the scraped content of that page. NVD is NOT cached (the record
+    // matures over time) but the picked reference URL is stable once chosen. On cache hit,
+    // triage_one skips the NVD scrape, the pick_ref call, and the hop scrape entirely.
+    pub fn get_cve_hop(&self, cve_id: &str) -> Option<(String, String)> {
+        self.conn.query_row(
+            "SELECT hop_url, hop_content FROM cve_hop_cache WHERE cve_id = ?1",
+            params![cve_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).ok()
+    }
+
+    pub fn put_cve_hop(&self, cve_id: &str, hop_url: &str, hop_content: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO cve_hop_cache (cve_id, hop_url, hop_content) VALUES (?1, ?2, ?3)",
+            params![cve_id, hop_url, hop_content],
+        )?;
+        Ok(())
     }
 
     pub fn load_since(&self, days: u64) -> anyhow::Result<Vec<CveEntry>> {
@@ -69,14 +92,19 @@ impl Db {
         Ok(())
     }
 
-    pub fn delete_entry(&self, id: &str) -> anyhow::Result<()> {
+    // Deleting an entry also writes a tombstone into `deleted_entries` so the next feed
+    // poll's dedup check in main.rs can skip the id instead of re-ingesting it. Without the
+    // tombstone, `x` would only stick until the next poll interval brought the item back.
+    pub fn delete_entry(&self, id: &str) -> rusqlite::Result<usize> {
         self.conn.execute("DELETE FROM entries WHERE id=?1", params![id])?;
-        Ok(())
+        self.conn.execute("INSERT OR IGNORE INTO deleted_entries (id) VALUES (?1)", params![id])
     }
+
+    pub fn is_deleted(&self, id: &str) -> bool { self.conn.query_row("SELECT 1 FROM deleted_entries WHERE id=?1", params![id], |_| Ok(())).is_ok() }
 
     pub fn clear_llm(&self, id: &str) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE entries SET llm_summary=NULL, ascii_diagram=NULL, relevance_score=NULL, cve_ids='[]' WHERE id=?1",
+            "UPDATE entries SET llm_summary=NULL, ascii_diagram=NULL, relevance_score=NULL, cve_ids='[]', scraped_content=NULL WHERE id=?1",
             params![id],
         )?;
         Ok(())

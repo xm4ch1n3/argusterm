@@ -18,7 +18,12 @@ pub struct Config {
 pub struct FeedsConfig { pub urls: Vec<String>, pub poll_interval_secs: u64 }
 
 #[derive(Debug, Deserialize)]
-pub struct LlmConfig { pub model: String, pub api_key: String, pub max_concurrent: usize }
+pub struct LlmConfig {
+    pub model_extract: String,
+    pub model_summarize: String,
+    pub api_key: String,
+    pub max_concurrent: usize,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ScraperConfig { pub api_key: String }

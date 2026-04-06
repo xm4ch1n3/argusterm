@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "cve_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "CVE identifiers in canonical CVE-YYYY-NNNNN form. Empty array if none."
+    }
+  },
+  "required": ["cve_ids"],
+  "additionalProperties": false
+}

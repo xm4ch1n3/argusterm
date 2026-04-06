@@ -1,0 +1,8 @@
+Extract every CVE identifier mentioned in the following security feed entry. Use canonical form `CVE-YYYY-NNNNN`. Look in the title, description, and body. Return an empty list if none.
+
+Title: {{ title }}
+Description: {{ description }}
+{% if content %}
+Body:
+{{ content }}
+{% endif %}

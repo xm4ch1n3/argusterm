@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Semaphore};
 
-use crate::state::CveEntry;
+use crate::db::Db;
+use crate::state::{CveEntry, DiagramConfig, FeedSource, LlmConfig, ScraperConfig};
 use crate::tui::{AppEvent, LlmUpdate};
 
 
@@ -17,9 +18,15 @@ fn load_templates() -> Environment<'static> {
     for (name, src) in [
         ("triage_system", include_str!("../../prompts/triage_system.j2")),
         ("triage_user", include_str!("../../prompts/triage_user.j2")),
+        ("extract_ids", include_str!("../../prompts/extract_ids.j2")),
+        ("pick_ref", include_str!("../../prompts/pick_ref.j2")),
     ] { env.add_template(name, src).unwrap_or_else(|_| panic!("failed to load {name}")); }
     env
 }
+
+const TRIAGE_SCHEMA: &str = include_str!("../../prompts/triage_schema.json");
+const EXTRACT_IDS_SCHEMA: &str = include_str!("../../prompts/extract_ids_schema.json");
+const PICK_REF_SCHEMA: &str = include_str!("../../prompts/pick_ref_schema.json");
 
 #[derive(Deserialize)]
 struct ApiResponse { content: Vec<ContentBlock> }
@@ -37,18 +44,54 @@ struct TriageResult {
     cve_ids: Vec<String>,
 }
 
-fn triage_schema() -> Value {
-    serde_json::from_str(include_str!("../../prompts/triage_schema.json")).expect("invalid triage_schema.json")
+#[derive(Deserialize)]
+struct ExtractIds { cve_ids: Vec<String> }
+
+// NOTE: rationale is declared BEFORE url in the schema so that the decoder emits reasoning
+// tokens first and the url field is conditioned on them. Do not reorder.
+#[derive(Deserialize)]
+struct PickRef { rationale: String, url: Option<String> }
+
+// Shared runtime deps for the triage pipeline. Bundled so every function takes `&LlmDeps`
+// instead of 6-9 loose parameters. Held in `Arc<LlmDeps>` by `triage_loop` so each spawned
+// task only clones one pointer per entry. `db` is a separate SQLite connection (not shared
+// with main's handle) wrapped in a std Mutex for the CVE-hop cache lookups; SQLite queries
+// are fast enough that a blocking mutex over the sync Connection is fine inside tokio tasks
+// as long as we don't hold the guard across await points.
+struct LlmDeps {
+    client: reqwest::Client,
+    env: Environment<'static>,
+    api_key: String,
+    scraper_key: Option<String>,
+    model_extract: String,
+    model_summarize: String,
+    graph_easy_bin: String,
+    perl5lib: String,
+    db: std::sync::Mutex<Db>,
+}
+
+// NOTE: append-only per-phase log at .argusterm/triage.log so you can `tail -f` it to watch
+// the 5-phase pipeline live. Silent if the file can't be opened; never blocks triage.
+fn tlog(entry_id: &str, phase: &str, detail: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(".argusterm/triage.log") {
+        let _ = writeln!(f, "{} {} {:8} {}", chrono::Utc::now().format("%H:%M:%S"), entry_id, phase, detail);
+    }
 }
 
 async fn scrape_url(client: &reqwest::Client, api_key: &str, url: &str) -> anyhow::Result<String> {
+    // NOTE: 10000 chars per result is the SINGLE truncation point in the entire pipeline —
+    // downstream LLM calls pass the scraped content through unmodified. Keeping the cap at
+    // Parallel.ai bounds cost/memory/backend work in one place. The 90s per-request timeout
+    // tolerates Parallel.ai's per-URL stochastic slowness (some URLs reproducibly take 30-60s).
     let resp = client
         .post("https://api.parallel.ai/v1beta/extract")
+        .timeout(Duration::from_secs(90))
         .header("x-api-key", api_key)
         .json(&json!({
             "urls": [url],
             "objective": "Extract the full text of this security advisory, vulnerability report, or cybersecurity news article. Include any CVE numbers, affected products, and technical details.",
-            "full_content": true,
+            "full_content": {"max_chars_per_result": 10000},
         }))
         .send().await?;
     if !resp.status().is_success() {
@@ -80,24 +123,17 @@ async fn render_dot(dot: &str, graph_easy_bin: &str, perl5lib: &str) -> anyhow::
     }
 }
 
-async fn call_anthropic(
+async fn call_json<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client, api_key: &str, model: &str,
-    env: &Environment<'_>, entry: &CveEntry, content: &str,
-) -> anyhow::Result<TriageResult> {
-    let system_prompt = env.get_template("triage_system").expect("missing triage_system")
-        .render(minijinja::context!()).expect("failed to render triage_system");
-    // NOTE: truncate to ~6000 chars, safe for multi-byte UTF-8
-    let desc: String = content.chars().take(6000).collect();
-    let user_msg = env.get_template("triage_user").expect("missing triage_user")
-        .render(minijinja::context! {
-            entry_id => &entry.id, entry_title => &entry.title, entry_content => &desc,
-        }).expect("failed to render triage_user");
-
-    let body = json!({
-        "model": model, "max_tokens": 1024, "system": system_prompt,
-        "messages": [{"role": "user", "content": user_msg}],
-        "output_config": {"format": {"type": "json_schema", "schema": triage_schema()}},
+    system: &str, user: &str, schema_src: &str, max_tokens: u32,
+) -> anyhow::Result<T> {
+    let mut body = json!({
+        "model": model, "max_tokens": max_tokens, "system": system,
+        "messages": [{"role": "user", "content": user}],
+        "output_config": {"format": {"type": "json_schema", "schema": serde_json::from_str::<Value>(schema_src)?}},
     });
+    // Adaptive thinking is only supported on Sonnet/Opus 4.6 — Haiku 4.5 hard-rejects it.
+    if !model.contains("haiku") { body["thinking"] = json!({"type": "adaptive"}); }
     let resp = client.post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
@@ -106,51 +142,144 @@ async fn call_anthropic(
         anyhow::bail!("API {}: {}", resp.status(), resp.text().await?);
     }
     let api: ApiResponse = resp.json().await?;
-    let text = api.content.first().and_then(|b| b.text.as_deref()).unwrap_or("{}");
+    // NOTE: use find_map not first() — when thinking fires, content[0] is a thinking block
+    // with no text field, and the JSON payload lives in a later text block.
+    let text = api.content.iter().find_map(|b| b.text.as_deref()).unwrap_or("{}");
     Ok(serde_json::from_str(text)?)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn triage_one(
-    client: &reqwest::Client, api_key: &str, model: &str,
-    env: &Environment<'_>, entry: &CveEntry, scraper_key: Option<&str>,
-    graph_easy_bin: &str, perl5lib: &str,
-) -> anyhow::Result<(TriageResult, String, Option<String>)> {
-    let scraped = match (entry.url.as_deref(), scraper_key) {
-        _ if entry.scraped_content.is_some() => entry.scraped_content.clone(),
-        (Some(url), Some(key)) => scrape_url(client, key, url).await.ok(),
-        _ => None,
-    };
-    let content = scraped.as_deref().unwrap_or(&entry.description);
-    let result = call_anthropic(client, api_key, model, env, entry, content).await?;
-    let diagram = render_dot(&result.dot_diagram, graph_easy_bin, perl5lib).await
-        .unwrap_or_else(|e| format!("(diagram render failed: {e})"));
-    Ok((result, diagram, scraped))
+fn nvd_url(cve_id: &str) -> String { format!("https://nvd.nist.gov/vuln/detail/{cve_id}") }
+
+async fn extract_ids(
+    deps: &LlmDeps, entry_id: &str, title: &str, description: &str, content: Option<&str>,
+) -> Vec<String> {
+    let user = deps.env.get_template("extract_ids").expect("missing extract_ids")
+        .render(minijinja::context! { title => title, description => description, content => content })
+        .expect("failed to render extract_ids");
+    match call_json::<ExtractIds>(&deps.client, &deps.api_key, &deps.model_extract, "", &user, EXTRACT_IDS_SCHEMA, 256).await {
+        Ok(o) => o.cve_ids,
+        Err(e) => { tlog(entry_id, "ids_err", &format!("{e:#}")); Vec::new() }
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn triage_loop(
-    tx: mpsc::UnboundedSender<AppEvent>, rx: mpsc::UnboundedReceiver<CveEntry>,
-    model: Arc<str>, api_key: Arc<str>, scraper_key: Option<Arc<str>>,
-    graph_easy_bin: Arc<str>, perl5lib: Arc<str>, semaphore: Arc<Semaphore>,
-) {
-    let client = Arc::new(reqwest::Client::builder()
-        .timeout(Duration::from_secs(60)).build().expect("failed to build HTTP client"));
-    let env = Arc::new(load_templates());
-    let mut rx = rx;
+async fn pick_ref(deps: &LlmDeps, entry_id: &str, nvd_content: &str) -> Option<PickRef> {
+    let user = deps.env.get_template("pick_ref").expect("missing pick_ref")
+        .render(minijinja::context! { nvd_content => nvd_content })
+        .expect("failed to render pick_ref");
+    match call_json::<PickRef>(&deps.client, &deps.api_key, &deps.model_extract, "", &user, PICK_REF_SCHEMA, 512).await {
+        Ok(p) => Some(p),
+        Err(e) => { tlog(entry_id, "pick_err", &format!("{e:#}")); None }
+    }
+}
 
+async fn summarize(deps: &LlmDeps, entry: &CveEntry, content: &str) -> anyhow::Result<TriageResult> {
+    let system_prompt = deps.env.get_template("triage_system").expect("missing triage_system")
+        .render(minijinja::context!()).expect("failed to render triage_system");
+    let user_msg = deps.env.get_template("triage_user").expect("missing triage_user")
+        .render(minijinja::context! {
+            entry_id => &entry.id, entry_title => &entry.title, entry_content => content,
+        }).expect("failed to render triage_user");
+    call_json::<TriageResult>(&deps.client, &deps.api_key, &deps.model_summarize, &system_prompt, &user_msg, TRIAGE_SCHEMA, 8192).await
+}
+
+async fn triage_one(deps: &LlmDeps, entry: &CveEntry) -> anyhow::Result<(TriageResult, String, Option<String>)> {
+    tlog(&entry.id, "start", entry.url.as_deref().unwrap_or("(no url)"));
+    let scraper_key = deps.scraper_key.as_deref();
+
+    // Phase 1: primary scrape of the RSS entry's URL.
+    // - Cached:    reuse whatever we already stored in the DB.
+    // - MSRC:      skip the scrape. Microsoft's update-guide pages are a client-rendered
+    //              SPA that returns only navigation wrapper boilerplate (header, breadcrumbs,
+    //              footer) with a "Not found" message in the body — no actual advisory text.
+    //              The RSS title already carries the CVE id, and the NVD hop in phase 3
+    //              supplies the real content.
+    // - Fresh:     call Parallel.ai to scrape the URL.
+    // - Otherwise: no URL or no scraper key — leave primary empty and let later phases run
+    //              on whatever context is available.
+    let (primary, note) = if let Some(cached) = entry.scraped_content.as_deref() {
+        (Some(cached.to_string()), "cached")
+    } else if matches!(entry.source, FeedSource::Microsoft) {
+        (None, "skipped (MSRC SPA)")
+    } else if let (Some(url), Some(key)) = (entry.url.as_deref(), scraper_key) {
+        (scrape_url(&deps.client, key, url).await.ok(), "fresh")
+    } else {
+        (None, "unavailable")
+    };
+    tlog(&entry.id, "primary", &format!("{} chars ({note})", primary.as_ref().map(|s| s.len()).unwrap_or(0)));
+    let primary_ref = primary.as_deref().unwrap_or(&entry.description);
+
+    // Phase 2: Haiku extracts CVE ids from the entry + primary content.
+    let cve_ids = extract_ids(deps, &entry.id, &entry.title, &entry.description, Some(primary_ref)).await;
+    tlog(&entry.id, "ids", &format!("{cve_ids:?}"));
+
+    // Phase 3-5: hop chain — only runs for EXACTLY one CVE id. Multi-CVE entries (news
+    // roundups, patch bundles, research chains) skip the chain since no single NVD page is
+    // authoritative. Cached per CVE id: if a previous triage already picked + scraped a
+    // reference URL for this CVE, reuse the cached content and skip the NVD scrape, pick_ref
+    // call, and hop scrape entirely. NVD itself is NOT cached because CVE records mature
+    // over time (Received → Awaiting Analysis → enriched), but the picked reference URL
+    // is stable once chosen.
+    let (nvd, hop) = match (cve_ids.as_slice(), scraper_key) {
+        ([id], Some(key)) => {
+            let cached = deps.db.lock().unwrap().get_cve_hop(id);
+            if let Some((cached_url, cached_content)) = cached {
+                tlog(&entry.id, "cache", &format!("hit cve={id} url={cached_url} ({} chars)", cached_content.len()));
+                (None, Some(cached_content))
+            } else {
+                tlog(&entry.id, "cache", &format!("miss cve={id}"));
+                let nvd = scrape_url(&deps.client, key, &nvd_url(id)).await.ok();
+                tlog(&entry.id, "nvd", &format!("{} chars", nvd.as_ref().map(|s| s.len()).unwrap_or(0)));
+                let pick = match nvd.as_deref() {
+                    Some(md) => pick_ref(deps, &entry.id, md).await,
+                    None => None,
+                };
+                tlog(&entry.id, "pick", &format!("url={:?} rationale={:?}",
+                    pick.as_ref().and_then(|p| p.url.as_deref()),
+                    pick.as_ref().map(|p| p.rationale.as_str())));
+                let hop_url = pick.as_ref().and_then(|p| p.url.as_deref());
+                let hop = match hop_url {
+                    Some(u) => scrape_url(&deps.client, key, u).await.ok(),
+                    None => None,
+                };
+                tlog(&entry.id, "hop", &format!("{} chars", hop.as_ref().map(|s| s.len()).unwrap_or(0)));
+                if let (Some(u), Some(c)) = (hop_url, hop.as_deref()) {
+                    let _ = deps.db.lock().unwrap().put_cve_hop(id, u, c);
+                }
+                (nvd, hop)
+            }
+        }
+        _ => (None, None),
+    };
+
+    // Phase 5: concatenate all context and summarize.
+    let ctx = [primary.as_deref(), nvd.as_deref(), hop.as_deref()]
+        .into_iter().flatten().collect::<Vec<_>>().join("\n\n---\n\n");
+    let ctx_final = if ctx.is_empty() { entry.description.clone() } else { ctx };
+    tlog(&entry.id, "ctx", &format!("{} chars (primary+nvd+hop)", ctx_final.len()));
+
+    let result = summarize(deps, entry, &ctx_final).await?;
+    tlog(&entry.id, "done", &format!("type={} score={:.2} sev={}", result.content_type, result.relevance_score, result.severity));
+    let diagram = render_dot(&result.dot_diagram, &deps.graph_easy_bin, &deps.perl5lib).await
+        .unwrap_or_else(|e| format!("(diagram render failed: {e})"));
+    let cached = (!ctx_final.is_empty() && ctx_final != entry.description).then_some(ctx_final);
+    Ok((result, diagram, cached))
+}
+
+async fn triage_loop(
+    tx: mpsc::UnboundedSender<AppEvent>,
+    mut rx: mpsc::UnboundedReceiver<CveEntry>,
+    deps: Arc<LlmDeps>,
+    semaphore: Arc<Semaphore>,
+) {
     while let Some(entry) = rx.recv().await {
         let permit = match semaphore.clone().acquire_owned().await {
             Ok(p) => p,
             Err(_) => return,
         };
-        let (client, api_key, model, scraper_key, tx, env, ge_bin, pe_lib) = (
-            client.clone(), api_key.clone(), model.clone(),
-            scraper_key.clone(), tx.clone(), env.clone(),
-            graph_easy_bin.clone(), perl5lib.clone(),
-        );
+        let deps = deps.clone();
+        let tx = tx.clone();
         tokio::spawn(async move {
-            let evt = match triage_one(&client, &api_key, &model, &env, &entry, scraper_key.as_deref(), &ge_bin, &pe_lib).await {
+            let evt = match triage_one(&deps, &entry).await {
                 Ok((r, diagram, scraped)) => AppEvent::LlmResult(LlmUpdate {
                     entry_id: entry.id.clone(), content_type: r.content_type,
                     severity: r.severity, summary: r.summary, ascii_diagram: diagram,
@@ -165,16 +294,25 @@ async fn triage_loop(
 }
 
 pub fn spawn(
-    event_tx: mpsc::UnboundedSender<AppEvent>, model: String, api_key: String,
-    scraper_key: Option<String>, max_concurrent: usize,
-    graph_easy_bin: String, perl5lib: String,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    llm: LlmConfig,
+    scraper: Option<ScraperConfig>,
+    diagram: DiagramConfig,
 ) -> mpsc::UnboundedSender<CveEntry> {
     let (entry_tx, entry_rx) = mpsc::unbounded_channel();
-    let semaphore = Arc::new(Semaphore::new(max_concurrent));
-    tokio::spawn(triage_loop(
-        event_tx, entry_rx, model.into(), api_key.into(),
-        scraper_key.map(|s| Arc::from(s.as_str())),
-        Arc::from(graph_easy_bin.as_str()), Arc::from(perl5lib.as_str()), semaphore,
-    ));
+    let semaphore = Arc::new(Semaphore::new(llm.max_concurrent));
+    let deps = Arc::new(LlmDeps {
+        client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(60)).build().expect("failed to build HTTP client"),
+        env: load_templates(),
+        api_key: llm.api_key,
+        scraper_key: scraper.map(|s| s.api_key),
+        model_extract: llm.model_extract,
+        model_summarize: llm.model_summarize,
+        graph_easy_bin: diagram.graph_easy_bin,
+        perl5lib: diagram.perl5lib,
+        db: std::sync::Mutex::new(Db::open().expect("failed to open cache.db for llm")),
+    });
+    tokio::spawn(triage_loop(event_tx, entry_rx, deps, semaphore));
     entry_tx
 }

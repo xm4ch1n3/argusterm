@@ -23,7 +23,10 @@ urls = [
 poll_interval_secs = 300
 
 [llm]
-model = "claude-sonnet-4-6"
+# Haiku is used for cheap/fast structured extraction (CVE ids, reference URL picking).
+# Sonnet is used for the main triage call that produces the summary + DOT diagram.
+model_extract = "claude-haiku-4-5"
+model_summarize = "claude-sonnet-4-6"
 api_key = "your-anthropic-api-key-here"
 max_concurrent = 20
 

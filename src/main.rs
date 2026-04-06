@@ -27,7 +27,7 @@ fn handle_shared(
         KeyCode::Char('r') => if let Some(i) = state.selected_entry_index() {
             let _ = db.clear_llm(&state.entries[i].id);
             let e = &mut state.entries[i];
-            e.llm_summary = None; e.ascii_diagram = None; e.relevance_score = None; e.cve_ids.clear();
+            e.llm_summary = None; e.ascii_diagram = None; e.relevance_score = None; e.cve_ids.clear(); e.scraped_content = None;
             let _ = llm_tx.send(state.entries[i].clone());
         }
         KeyCode::Char('x') => if let Some(i) = state.selected_entry_index() {
@@ -60,11 +60,7 @@ async fn main() -> Result<()> {
     tui.start(Duration::from_millis(config.tui.refresh_rate_ms));
 
     feeds::spawn(tui.event_tx(), config.feeds.urls, config.feeds.poll_interval_secs);
-    let scraper_key = config.scraper.map(|s| s.api_key);
-    let llm_tx = llm::spawn(
-        tui.event_tx(), config.llm.model, config.llm.api_key, scraper_key,
-        config.llm.max_concurrent, config.diagram.graph_easy_bin, config.diagram.perl5lib,
-    );
+    let llm_tx = llm::spawn(tui.event_tx(), config.llm, config.scraper, config.diagram);
 
     let db = db::Db::open()?;
     let days_lookback = config.filters.days_lookback;
@@ -137,6 +133,7 @@ async fn main() -> Result<()> {
                 let selected_id = state.selected_entry_index().map(|i| state.entries[i].id.clone());
                 for e in entries {
                     if e.published < ingest_cutoff { continue; }
+                    if db.is_deleted(&e.id) { continue; }
                     if !state.entries.iter().any(|x| x.id == e.id) {
                         let _ = db.upsert_entry(&e);
                         let _ = llm_tx.send(e.clone());

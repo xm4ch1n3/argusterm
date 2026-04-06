@@ -1,0 +1,20 @@
+You are selecting the single most technically-detailed reference URL from an NVD advisory page's references section. Return exactly one URL, or `null` if nothing in the list is likely to contain real technical content.
+
+NVD page content:
+{{ nvd_content }}
+
+Picking rules (hard preferences, in order):
+1. **GitHub: issue / PR / commit / security advisory > bare repo root.** If both `github.com/org/repo` and `github.com/org/repo/issues/N` appear, pick the issue. Same for commits and PRs.
+2. **Bug tracker entries** (bugzilla.*, bugs.debian.org, bugs.gentoo.org, bugs.launchpad.net) — they carry the original technical discussion.
+3. **Vendor security advisories** with CVE-specific pages (access.redhat.com/security/cve/..., security.*, *.vendor.com/security/...) when they link directly to this CVE.
+4. **Writeups** that describe the vulnerable code path, CVSS vector derivation, or an exploit sketch.
+
+Hard exclusions (never pick):
+- `vuldb.com` — login-walled.
+- `cvedetails.com`, `cve.mitre.org` — aggregators, nothing beyond NVD.
+- `nvd.nist.gov` — we are already reading it.
+- Press / media: arstechnica.com, bleepingcomputer.com, theregister.com, wired.com, bloomberg.com, ft.com, therecord.media, darkreading.com, securityweek.com. Narrative, not technical.
+- Release notes pages with no CVE-specific content.
+- Broken / dead links flagged as such.
+
+Return a JSON object with `rationale` first (one short sentence explaining the choice — the url field is conditioned on these tokens), then `url` (the chosen URL string, or `null` if nothing qualifies).

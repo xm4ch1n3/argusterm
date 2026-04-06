@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "rationale": {
+      "type": "string",
+      "description": "One short sentence explaining the choice."
+    },
+    "url": {
+      "type": ["string", "null"],
+      "description": "The chosen reference URL, or null if nothing in the references list is technical enough."
+    }
+  },
+  "required": ["rationale", "url"],
+  "additionalProperties": false
+}
