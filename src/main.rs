@@ -214,7 +214,6 @@ async fn main() -> Result<()> {
                         state.list_state.select(Some(pos));
                     }
                 }
-                state.is_loading = false;
                 needs_draw = true;
             }
             AppEvent::LlmResult(u) => {

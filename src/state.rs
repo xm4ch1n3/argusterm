@@ -158,7 +158,6 @@ pub struct AppState {
     pub cve_bar_index: usize,
     pub pending_g: bool,
     pub list_height: usize,
-    pub is_loading: bool,
     pub should_quit: bool,
 }
 
@@ -179,7 +178,6 @@ impl Default for AppState {
             cve_bar_index: 0,
             pending_g: false,
             list_height: 20,
-            is_loading: false,
             should_quit: false,
         }
     }

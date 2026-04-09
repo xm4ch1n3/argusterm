@@ -33,6 +33,14 @@ const TRIAGE_SCHEMA: &str = include_str!("../../prompts/triage_schema.json");
 const EXTRACT_IDS_SCHEMA: &str = include_str!("../../prompts/extract_ids_schema.json");
 const PICK_REF_SCHEMA: &str = include_str!("../../prompts/pick_ref_schema.json");
 
+// Per-request HTTP timeouts. Scrape tolerates Parallel.ai's stochastic 30-60s URLs;
+// LLM is generous because Sonnet+adaptive-thinking on a complex 10K-char article can
+// easily exceed a minute before emitting the full structured triage JSON. The reqwest
+// client builder uses LLM_TIMEOUT_SECS as the default backstop so any future HTTP call
+// that forgets `.timeout()` still terminates instead of hanging forever.
+const SCRAPE_TIMEOUT_SECS: u64 = 90;
+const LLM_TIMEOUT_SECS: u64 = 300;
+
 #[derive(Deserialize)]
 struct ApiResponse {
     content: Vec<ContentBlock>,
@@ -137,11 +145,11 @@ fn tlog(entry_id: &str, phase: &str, detail: &str) {
 async fn scrape_url(client: &reqwest::Client, api_key: &str, url: &str) -> anyhow::Result<String> {
     // NOTE: 10000 chars per result is the SINGLE truncation point in the entire pipeline —
     // downstream LLM calls pass the scraped content through unmodified. Keeping the cap at
-    // Parallel.ai bounds cost/memory/backend work in one place. The 90s per-request timeout
+    // Parallel.ai bounds cost/memory/backend work in one place. SCRAPE_TIMEOUT_SECS
     // tolerates Parallel.ai's per-URL stochastic slowness (some URLs reproducibly take 30-60s).
     let resp = client
         .post("https://api.parallel.ai/v1beta/extract")
-        .timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(SCRAPE_TIMEOUT_SECS))
         .header("x-api-key", api_key)
         .json(&json!({
             "urls": [url],
@@ -319,6 +327,7 @@ async fn call_json<T: serde::de::DeserializeOwned>(
     }
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
+        .timeout(Duration::from_secs(LLM_TIMEOUT_SECS))
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .json(&body)
@@ -622,7 +631,7 @@ pub fn spawn(
     let semaphore = Arc::new(Semaphore::new(llm.max_concurrent));
     let deps = Arc::new(LlmDeps {
         client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(LLM_TIMEOUT_SECS))
             .build()
             .expect("failed to build HTTP client"),
         env: load_templates(),

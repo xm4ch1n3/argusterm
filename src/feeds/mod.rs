@@ -130,8 +130,11 @@ async fn poll_loop(tx: mpsc::UnboundedSender<AppEvent>, urls: Vec<String>, inter
         .build()
         .expect("failed to build HTTP client");
 
-    // NOTE: Initial fetch immediately, then on interval
+    // NOTE: Initial fetch immediately, then on interval. Skip missed ticks so a slow
+    // fetch pass (16 URLs × up to 30s timeout) doesn't queue back-to-back catch-up
+    // polls once the loop outruns the interval.
     let mut ticker = time::interval(Duration::from_secs(interval_secs));
+    ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     loop {
         ticker.tick().await;
