@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::doomflame::{render_flames, FLAME_TOP_H, FLAME_W, SUBTITLE};
 use crate::state::{AppState, CveEntry, FeedSource, Pane};
 
 #[derive(Debug)]
@@ -159,32 +160,8 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn centered(area: Rect, h_pct: u16, v_pct: u16) -> Rect {
-    let (hm, vm) = ((100 - h_pct) / 2, (100 - v_pct) / 2);
-    let vert = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(vm),
-            Constraint::Percentage(v_pct),
-            Constraint::Percentage(vm),
-        ])
-        .split(area)[1];
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(hm),
-            Constraint::Percentage(h_pct),
-            Constraint::Percentage(hm),
-        ])
-        .split(vert)[1]
-}
-
 fn border_block(title: &str, active: Pane, this: Pane, borders: Borders) -> Block<'_> {
-    let color = if active == this {
-        Color::Cyan
-    } else {
-        Color::DarkGray
-    };
+    let color = if active == this { Color::Cyan } else { Color::DarkGray };
     Block::default()
         .title(title)
         .borders(borders)
@@ -192,7 +169,26 @@ fn border_block(title: &str, active: Pane, this: Pane, borders: Borders) -> Bloc
 }
 
 pub fn render(frame: &mut Frame, state: &mut AppState) {
-    let canvas = centered(frame.area(), 85, 90);
+    let full = frame.area();
+    let safe_top = FLAME_TOP_H.min(full.height);
+    let top_area = Rect::new(full.x, full.y, full.width, safe_top);
+    let body = Rect::new(
+        full.x,
+        full.y + safe_top,
+        full.width,
+        full.height.saturating_sub(safe_top),
+    );
+
+    let hcols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(FLAME_W),
+            Constraint::Min(40),
+            Constraint::Length(FLAME_W),
+        ])
+        .split(body);
+    let (left_margin, canvas, right_margin) = (hcols[0], hcols[1], hcols[2]);
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -205,6 +201,15 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(outer[0]);
+
+    // left/right flames span the full body height (quote strip + canvas)
+    state.flame_top.resize(top_area.width as usize, top_area.height as usize);
+    state.flame_left.resize(left_margin.width as usize, left_margin.height as usize);
+    state.flame_right.resize(right_margin.width as usize, right_margin.height as usize);
+
+    render_flames(frame, top_area, &state.flame_top);
+    render_flames(frame, left_margin, &state.flame_left);
+    render_flames(frame, right_margin, &state.flame_right);
 
     // --- Feed list ---
     state.list_height = left[0].height.saturating_sub(2) as usize;
@@ -424,5 +429,12 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     };
     let status =
         format!(" {vis}/{total}{llm} | {nav} | s:sort o:open r:redo x:drop q tab {esc_or_slash}");
-    frame.render_widget(Paragraph::new(s(status, Color::DarkGray)), root[1]);
+    let status_line = Line::from(vec![
+        s(status, Color::DarkGray),
+        Span::styled(
+            format!(" • \"{SUBTITLE}\""),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(status_line), root[1]);
 }

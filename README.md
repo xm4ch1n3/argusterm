@@ -1,8 +1,8 @@
 # argusterm
 
 <p align="center">
-  <img src="artifacts/argus.jpg" width="300" alt="Argus — the all-seeing sentinel" />
-  <img src="artifacts/cover.png" width="550" alt="argusterm TUI" />
+  <img src="artifacts/argus.jpg" height="249" alt="Argus — the all-seeing sentinel" />
+  <img src="artifacts/cover.gif" height="249" alt="argusterm TUI" />
 </p>
 
 > **Disclaimer:** this is a personal project so some choices reflect that — e.g. using Anthropic / Parallel among others. Feel free to fork the project and adapt it to your needs.

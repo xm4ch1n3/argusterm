@@ -1,4 +1,5 @@
 mod db;
+mod doomflame;
 mod feeds;
 mod filters;
 mod llm;
@@ -183,7 +184,12 @@ async fn main() -> Result<()> {
                 }
                 needs_draw = true;
             }
-            AppEvent::Tick => needs_draw = true,
+            AppEvent::Tick => {
+                state.flame_left.tick_left();
+                state.flame_right.tick_right();
+                state.flame_top.tick_top();
+                needs_draw = true;
+            }
             AppEvent::NewEntries(entries) => {
                 // NOTE: preserve selection by id — inserting in date-desc order shifts indices
                 let selected_id = state

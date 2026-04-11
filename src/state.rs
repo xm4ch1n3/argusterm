@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use ratatui::widgets::ListState;
 use serde::Deserialize;
 
+use crate::doomflame::FlameGrid;
+
 // --- Config (trust boundary: disk I/O + TOML deserialization) ---
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +161,9 @@ pub struct AppState {
     pub pending_g: bool,
     pub list_height: usize,
     pub should_quit: bool,
+    pub flame_left: FlameGrid,
+    pub flame_right: FlameGrid,
+    pub flame_top: FlameGrid,
 }
 
 impl Default for AppState {
@@ -179,6 +184,9 @@ impl Default for AppState {
             pending_g: false,
             list_height: 20,
             should_quit: false,
+            flame_left: FlameGrid::new(0xDEADBEEF_12345678),
+            flame_right: FlameGrid::new(0xCAFEBABE_87654321),
+            flame_top: FlameGrid::new(0xFEEDFACE_DEADBEEF),
         }
     }
 }
