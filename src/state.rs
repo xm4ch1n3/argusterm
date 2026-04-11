@@ -191,7 +191,7 @@ impl AppState {
         self.cve_bar_index = 0;
     }
 
-    pub fn refilter(&mut self) {
+    pub fn refilter(&mut self, reset_offset: bool) {
         self.filtered = crate::filters::apply(&self.entries, &self.filter_text, self.sort_mode);
         let sel = if self.filtered.is_empty() {
             None
@@ -203,6 +203,12 @@ impl AppState {
                     .min(self.filtered.len() - 1),
             )
         };
+        // NOTE: reset scroll offset when the filter query changes so that items before the
+        // current offset are not silently hidden after the list shrinks (ratatui only adjusts
+        // offset to keep `selected` visible, it never pulls `offset` back below `selected`)
+        if reset_offset {
+            *self.list_state.offset_mut() = 0;
+        }
         self.list_state.select(sel);
     }
 

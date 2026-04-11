@@ -49,12 +49,12 @@ fn handle_shared(
             if let Some(i) = state.selected_entry_index() {
                 let _ = db.delete_entry(&state.entries[i].id);
                 state.entries.remove(i);
-                state.refilter();
+                state.refilter(false);
             }
         }
         KeyCode::Char('s') => {
             state.sort_mode = state.sort_mode.next();
-            state.refilter();
+            state.refilter(true);
         }
         KeyCode::Char('/') => state.active_pane = Pane::FilterBar,
         _ => return false,
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
         }
         state.entries.push(e);
     }
-    state.refilter();
+    state.refilter(false);
 
     let mut needs_draw = true;
     while let Some(event) = tui.next().await {
@@ -120,11 +120,11 @@ async fn main() -> Result<()> {
                         }
                         KeyCode::Char(c) => {
                             state.filter_text.push(c);
-                            state.refilter();
+                            state.refilter(true);
                         }
                         KeyCode::Backspace => {
                             state.filter_text.pop();
-                            state.refilter();
+                            state.refilter(true);
                         }
                         _ => {}
                     }
@@ -204,7 +204,7 @@ async fn main() -> Result<()> {
                         state.entries.insert(pos, e);
                     }
                 }
-                state.refilter();
+                state.refilter(false);
                 if let Some(id) = selected_id {
                     if let Some(pos) = state
                         .filtered
@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
                     let max = state.entries[i].cve_ids.len().saturating_sub(1);
                     state.cve_bar_index = state.cve_bar_index.min(max);
                 }
-                state.refilter();
+                state.refilter(false);
                 needs_draw = true;
             }
             AppEvent::Resize => needs_draw = true,
