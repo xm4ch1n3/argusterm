@@ -113,7 +113,20 @@ The `days_lookback` setting controls both which cached entries are loaded on sta
 | **Detail** | `j`/`k` vscroll · `h`/`l` hscroll · `c` enter CVE bar |
 | **CVE Bar** | `h`/`l` nav · `o` open on NVD · `Esc` exit |
 | **Filter Bar** | type to filter · `Backspace` delete · `Esc`/`Enter` exit |
-| **Global** | `o` open URL · `r` re-triage · `x` delete (permanent) · `s` cycle sort · `p` pause/resume polling · `/` filter · `Tab` cycle panes · `q`/`Esc` quit |
+| **Global** | `m` cycle mark · `o` open URL · `r` re-triage · `x` delete (permanent) · `s` cycle sort · `p` pause/resume polling · `/` filter · `Tab` cycle panes · `q`/`Esc` quit |
+
+## Marks
+
+Each entry can be marked to track your reading state. Press `m` to cycle the mark on the selected entry. The mark is persisted in SQLite and rendered non-intrusively in the feed list.
+
+| Mark | Glyph | Meaning |
+|---|---|---|
+| **None** | ` ` | Unmarked (default) |
+| **Read** | `✓` | Fully read — the entire line is dimmed to de-emphasize it |
+| **Bookmarked** | `★` | Save for later |
+| **Skimmed** | `~` | Glanced over, not fully read |
+
+The glyph appears in parentheses before the entry title, e.g. `(★) title here...`. `Read` entries are rendered in `DarkGray` so they fade into the background while remaining visible.
 
 ## Data Persistence
 

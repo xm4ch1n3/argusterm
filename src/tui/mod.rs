@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::doomflame::{FLAME_TOP_H, FLAME_W, SUBTITLE, render_flames};
-use crate::state::{AppState, CveEntry, FeedSource, Pane};
+use crate::state::{AppState, CveEntry, FeedSource, Mark, Pane};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -77,13 +77,17 @@ impl Tui {
                     _ = cancel.cancelled() => break,
                     _ = tick.tick() => { if tx.send(AppEvent::Tick).is_err() { break; } }
                     maybe = ct => match maybe {
-                        Some(Ok(crossterm::event::Event::Key(key))) if key.kind == KeyEventKind::Press => {
-                            if tx.send(AppEvent::Key(key)).is_err() { break; }
+                        Some(Ok(crossterm::event::Event::Key(key)))
+                            if key.kind == KeyEventKind::Press && tx.send(AppEvent::Key(key)).is_err() =>
+                        {
+                            break;
                         }
-                        Some(Ok(crossterm::event::Event::Resize(_, _))) => {
-                            if tx.send(AppEvent::Resize).is_err() { break; }
+                        Some(Ok(crossterm::event::Event::Resize(_, _)))
+                            if tx.send(AppEvent::Resize).is_err() =>
+                        {
+                            break;
                         }
-                        Some(Err(_)) => { if tx.send(AppEvent::Error).is_err() { break; } }
+                        Some(Err(_)) if tx.send(AppEvent::Error).is_err() => break,
                         None => break,
                         _ => {}
                     }
@@ -243,7 +247,7 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
                 s("[ -- ]".into(), Color::DarkGray)
             };
             let title: String = cve.title.chars().take(title_max).collect();
-            ListItem::new(Line::from(vec![
+            let mut item = ListItem::new(Line::from(vec![
                 score,
                 s(
                     format!(" {} ", cve.source.label()),
@@ -253,8 +257,13 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
                     format!("{} ", cve.published.format("%y-%m-%d %H:%M")),
                     Color::DarkGray,
                 ),
+                s(format!("({}) ", cve.mark.glyph()), Color::DarkGray),
                 Span::raw(title),
-            ]))
+            ]));
+            if cve.mark == Mark::Read {
+                item = item.style(Style::default().fg(Color::DarkGray));
+            }
+            item
         })
         .collect();
 
@@ -438,7 +447,7 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
         "/"
     };
     let status = format!(
-        " {vis}/{total}{llm} | {nav} | p:pause s:sort o:open r:redo x:drop q tab {esc_or_slash}"
+        " {vis}/{total}{llm} | {nav} | m:mark p:pause s:sort o:open r:redo x:drop q tab {esc_or_slash}"
     );
     let mut spans = vec![s(status, Color::DarkGray)];
     if state.paused.load(std::sync::atomic::Ordering::Relaxed) {

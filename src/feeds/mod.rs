@@ -107,6 +107,7 @@ fn entry_to_cve(entry: &feed_rs::model::Entry, source: FeedSource) -> CveEntry {
         scraped_content: None,
         cve_ids: Vec::new(),
         content_type: None,
+        mark: Default::default(),
     }
 }
 

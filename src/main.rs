@@ -68,6 +68,12 @@ fn handle_shared(
             state.sort_mode = state.sort_mode.next();
             state.refilter(true);
         }
+        KeyCode::Char('m') => {
+            if let Some(i) = state.selected_entry_index() {
+                state.entries[i].mark = state.entries[i].mark.next();
+                let _ = db.upsert_entry(&state.entries[i]);
+            }
+        }
         KeyCode::Char('/') => state.active_pane = Pane::FilterBar,
         _ => return false,
     }

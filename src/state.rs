@@ -93,6 +93,34 @@ impl FeedSource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mark {
+    #[default]
+    None,
+    Read,
+    Bookmarked,
+    Skimmed,
+}
+
+impl Mark {
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::Read,
+            Self::Read => Self::Bookmarked,
+            Self::Bookmarked => Self::Skimmed,
+            Self::Skimmed => Self::None,
+        }
+    }
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::None => " ",
+            Self::Read => "✓",
+            Self::Bookmarked => "★",
+            Self::Skimmed => "~",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pane {
     #[default]
     FeedList,
@@ -152,6 +180,7 @@ pub struct CveEntry {
     pub scraped_content: Option<String>,
     pub cve_ids: Vec<String>,
     pub content_type: Option<String>,
+    pub mark: Mark,
 }
 
 // --- App state (owned by main task, no Arc/Mutex) ---

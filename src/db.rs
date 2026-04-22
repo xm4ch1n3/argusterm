@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 
-use crate::state::{CveEntry, FeedSource};
+use crate::state::{CveEntry, FeedSource, Mark};
 
 pub struct Db {
     conn: Connection,
@@ -27,6 +27,7 @@ impl Db {
             "content_type TEXT",
             "chokepoint_analysis TEXT",
             "indexed_at TEXT",
+            "mark TEXT DEFAULT 'none'",
         ] {
             let _ = conn.execute(&format!("ALTER TABLE entries ADD COLUMN {col}"), []);
         }
@@ -73,7 +74,7 @@ impl Db {
             "SELECT id, title, description, severity, published, source,
                     url, llm_summary, ascii_diagram, relevance_score,
                     scraped_content, cve_ids, content_type, chokepoint_analysis,
-                    indexed_at
+                    indexed_at, mark
              FROM entries WHERE published >= ?1 ORDER BY indexed_at DESC",
         )?;
         let rows = stmt.query_map(params![cutoff], |row| {
@@ -109,6 +110,7 @@ impl Db {
                 cve_ids: serde_json::from_str(&cve_raw).unwrap_or_default(),
                 content_type: row.get(12)?,
                 chokepoint_analysis: row.get(13)?,
+                mark: parse_mark(&row.get::<_, String>(15).unwrap_or_else(|_| "none".into())),
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -121,15 +123,15 @@ impl Db {
             "INSERT INTO entries (id, title, description, severity, published, source, url,
                                   llm_summary, ascii_diagram, relevance_score,
                                   scraped_content, cve_ids, content_type, chokepoint_analysis,
-                                  indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                                  indexed_at, mark)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, description=excluded.description, severity=excluded.severity,
                 published=excluded.published, source=excluded.source, url=excluded.url,
                 llm_summary=excluded.llm_summary, ascii_diagram=excluded.ascii_diagram,
                 relevance_score=excluded.relevance_score, scraped_content=excluded.scraped_content,
                 cve_ids=excluded.cve_ids, content_type=excluded.content_type,
-                chokepoint_analysis=excluded.chokepoint_analysis",
+                chokepoint_analysis=excluded.chokepoint_analysis, mark=excluded.mark",
             params![
                 e.id,
                 e.title,
@@ -146,6 +148,7 @@ impl Db {
                 e.content_type,
                 e.chokepoint_analysis,
                 e.indexed_at.to_rfc3339(),
+                mark_str(e.mark),
             ],
         )?;
         Ok(())
@@ -180,6 +183,27 @@ impl Db {
         )?;
         Ok(())
     }
+}
+
+const MARKS: &[(Mark, &str)] = &[
+    (Mark::None, "none"),
+    (Mark::Read, "read"),
+    (Mark::Bookmarked, "bookmarked"),
+    (Mark::Skimmed, "skimmed"),
+];
+fn mark_str(m: Mark) -> &'static str {
+    MARKS
+        .iter()
+        .find(|(v, _)| *v == m)
+        .map(|(_, n)| *n)
+        .unwrap_or("none")
+}
+fn parse_mark(s: &str) -> Mark {
+    MARKS
+        .iter()
+        .find(|(_, n)| *n == s)
+        .map(|(v, _)| *v)
+        .unwrap_or(Mark::None)
 }
 
 const SOURCES: &[(FeedSource, &str)] = &[
