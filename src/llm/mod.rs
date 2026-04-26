@@ -119,7 +119,7 @@ struct LlmDeps {
     model_summarize: String,
     graph_easy_bin: String,
     perl5lib: String,
-    db: std::sync::Mutex<Db>,
+    db: tokio::sync::Mutex<Db>,
 }
 
 // NOTE: append-only per-phase log at .argusterm/triage.log so you can `tail -f` it to watch
@@ -503,7 +503,7 @@ async fn triage_one(
     // is stable once chosen.
     let (nvd, hop) = match (cve_ids.as_slice(), scraper_key) {
         ([id], Some(key)) => {
-            let cached = deps.db.lock().unwrap().get_cve_hop(id);
+            let cached = deps.db.lock().await.get_cve_hop(id);
             if let Some((cached_url, cached_content)) = cached {
                 tlog(
                     &entry.id,
@@ -546,7 +546,7 @@ async fn triage_one(
                     &format!("{} chars", hop.as_ref().map(|s| s.len()).unwrap_or(0)),
                 );
                 if let (Some(u), Some(c)) = (hop_url, hop.as_deref()) {
-                    let _ = deps.db.lock().unwrap().put_cve_hop(id, u, c);
+                    let _ = deps.db.lock().await.put_cve_hop(id, u, c);
                 }
                 (nvd, hop)
             }
@@ -645,7 +645,7 @@ pub fn spawn(
         model_summarize: llm.model_summarize,
         graph_easy_bin: diagram.graph_easy_bin,
         perl5lib: diagram.perl5lib,
-        db: std::sync::Mutex::new(Db::open().expect("failed to open cache.db for llm")),
+        db: tokio::sync::Mutex::new(Db::open().expect("failed to open cache.db for llm")),
     });
     tokio::spawn(triage_loop(event_tx, entry_rx, deps, semaphore));
     entry_tx

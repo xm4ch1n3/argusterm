@@ -1,6 +1,6 @@
 [package]
 name = "argusterm"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 rust-version = "1.85"
 description = "TUI security feed monitor with LLM-powered triage"
@@ -25,3 +25,11 @@ minijinja = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }
+
+[lints.rust]
+future-incompatible = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = 10 }
+unwrap_used = { level = "deny", priority = 9 }

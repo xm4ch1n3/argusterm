@@ -1,3 +1,5 @@
+//! argus — TUI security feed monitor with LLM-powered triage.
+
 mod db;
 mod doomflame;
 mod feeds;
